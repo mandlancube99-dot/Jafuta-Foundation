@@ -661,13 +661,60 @@ const APPS = ['GarageBand','iMovie','Keynote','Duolingo','Docs','Books','Freefor
 
 // ══ UTILS ═══════════════════════════════════════════════
 const get  = k => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; }};
-const set  = (k,v) => localStorage.setItem(k, JSON.stringify(v));
+const set  = (k,v) => { localStorage.setItem(k, JSON.stringify(v)); pushToCloud(k,v); };
 const uid  = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const esc  = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const today= () => new Date().toISOString().slice(0,10);
 function fmtDate(iso){ if(!iso) return '—'; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-ZW',{day:'2-digit',month:'short',year:'numeric'});}
 function calcAge(dob){ if(!dob) return '—'; return Math.floor((Date.now()-new Date(dob))/(1000*60*60*24*365.25));}
 function levelBadge(l){ const m={'Pre-Reader':'b-pre','Early Reader':'b-early','Fluent':'b-fluent'}; return `<span class="badge ${m[l]||''}">${esc(l)}</span>`;}
+
+// ══ CLOUD SYNC (Google Sheets via Apps Script) ═════════════
+// 1. Deploy the Apps Script Web App (see setup guide).
+// 2. Paste the deployment URL below between the quotes.
+const CLOUD_URL = 'https://script.google.com/macros/s/AKfycbxDqpJQV5qOU6-yUPLdqWuh-W8kztxif-4XkvJqo1TP_3Ops79gSr-JHg08-vbouguF/exec';
+const ALL_KEYS = [SK_CI, SK_STU, SK_SESS, SK_LESSONS, SK_LP];
+let _cloudBusy = false;
+
+function pushToCloud(key, value){
+  if(!CLOUD_URL || CLOUD_URL.includes('PASTE_YOUR')) return; // not configured yet
+  fetch(CLOUD_URL, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight
+    body: JSON.stringify({ key, value })
+  }).catch(()=>{ /* silent fail — data still safe in localStorage */ });
+}
+
+async function pullFromCloud(silent){
+  if(!CLOUD_URL || CLOUD_URL.includes('PASTE_YOUR') || _cloudBusy) return;
+  _cloudBusy = true;
+  try{
+    const res = await fetch(CLOUD_URL, { method:'GET' });
+    const data = await res.json(); // { jf_checkins:[...], jf_students:[...], ... }
+    let changed = false;
+    ALL_KEYS.forEach(k=>{
+      if(data[k] !== undefined){
+        const incoming = JSON.stringify(data[k]);
+        if(incoming !== localStorage.getItem(k)){ localStorage.setItem(k, incoming); changed = true; }
+      }
+    });
+    if(changed) refreshVisibleViews();
+    if(!silent) toast('Synced with Google Sheets.');
+  }catch(err){
+    if(!silent) toast('Could not reach Google Sheets.');
+  }
+  _cloudBusy = false;
+}
+
+function refreshVisibleViews(){
+  // Re-render whichever screens exist on the current page without erroring if a fn is absent
+  ['renderHubDash','renderCheckinTable','renderRegister','renderStudents','renderLitDash','renderLP']
+    .forEach(fn=>{ if(typeof window[fn]==='function'){ try{ window[fn](); }catch(e){} } });
+}
+
+// Pull on load, then poll every 15s for near-real-time updates across iPads
+window.addEventListener('DOMContentLoaded', ()=> pullFromCloud(true));
+setInterval(()=> pullFromCloud(true), 15000);
 
 function toast(msg,dur=2500){
   const t=document.getElementById('toast');
@@ -994,7 +1041,7 @@ function exportCheckinsCSV(){
 
 function clearCheckins(){
   if(!confirm('Delete ALL check-in records?')) return;
-  localStorage.removeItem(SK_CI); renderHubDash(); toast('All check-ins cleared.');
+  set(SK_CI, []); renderHubDash(); toast('All check-ins cleared.');
 }
 
 // ══ LIT: REGISTER ════════════════════════════════════════
